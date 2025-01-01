@@ -4,6 +4,9 @@
 #include <chrono>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
+#include <map>
+
 
 class RaftNode {
 public:
@@ -38,4 +41,15 @@ private:
     std::random_device rd_;
     std::mt19937 gen_;
     std::uniform_int_distribution<> electionTimeout_;
+
+    bool handleVoteRequest(const RaftMessage& message);
+    void handleVoteResponse(const RaftMessage& message);
+    void becomeLeader();
+    void sendHeartbeat();
+    
+    std::map<int, bool> votesReceived_;
+    int votesGranted_;
+    
+    std::thread heartbeatThread_;
+    static constexpr int HEARTBEAT_INTERVAL = 50; 
 };
