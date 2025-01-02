@@ -119,3 +119,71 @@ bool NetworkManager::sendMessage(const NodeAddress& target, const RaftMessage& m
 void NetworkManager::setMessageCallback(std::function<void(const RaftMessage&)> callback) {
     messageCallback_ = std::move(callback);
 }
+
+void NetworkManager::handleConnection(int clientSocket) {
+    MessageType type;
+    if (recv(clientSocket, &type, sizeof(type), 0) != sizeof(type)) {
+        close(clientSocket);
+        return;
+    }
+
+    uint32_t messageSize;
+    if (recv(clientSocket, &messageSize, sizeof(messageSize), 0) != sizeof(messageSize)) {
+        close(clientSocket);
+        return;
+    }
+
+    std::vector<char> buffer(messageSize);
+    if (recv(clientSocket, buffer.data(), messageSize, 0) != messageSize) {
+        close(clientSocket);
+        return;
+    }
+
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    getpeername(clientSocket, (struct sockaddr*)&addr, &len);
+    NodeAddress clientAddr{
+        inet_ntoa(addr.sin_addr),
+        ntohs(addr.sin_port)
+    };
+
+    switch (type) {
+        case MessageType::RAFT:
+            handleRaftMessage(buffer);
+            break;
+        case MessageType::CLIENT_REQUEST:
+            handleClientRequest(buffer, clientAddr);
+            break;
+        case MessageType::CLIENT_RESPONSE:
+            break;
+    }
+
+    close(clientSocket);
+}
+
+bool NetworkManager::sendResponse(const NodeAddress& target, const ClientResponse& response) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        return false;
+    }
+
+    struct sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(target.port);
+    inet_pton(AF_INET, target.ip.c_str(), &serverAddr.sin_addr);
+
+    if (connect(sock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
+        close(sock);
+        return false;
+    }
+
+    MessageType type = MessageType::CLIENT_RESPONSE;
+    send(sock, &type, sizeof(type), 0);
+
+    close(sock);
+    return true;
+}
+
+void NetworkManager::setClientCallback(std::function<void(const ClientRequest&, const NodeAddress&)> callback) {
+    clientCallback_ = std::move(callback);
+}
