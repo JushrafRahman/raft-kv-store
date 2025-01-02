@@ -1,0 +1,8 @@
+/Users/jushraf/Desktop/dev/raft-kv-store/build/CMakeFiles/raft-kv-store.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/CMakeFiles/edit_cache.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/CMakeFiles/rebuild_cache.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/src/CMakeFiles/raft_lib.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/src/CMakeFiles/edit_cache.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/src/CMakeFiles/rebuild_cache.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/tests/CMakeFiles/edit_cache.dir
+/Users/jushraf/Desktop/dev/raft-kv-store/build/tests/CMakeFiles/rebuild_cache.dir

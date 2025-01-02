@@ -1,0 +1,2 @@
+/Library/Developer/CommandLineTools/usr/bin/ar qc libraft_lib.a CMakeFiles/raft_lib.dir/main.cpp.o CMakeFiles/raft_lib.dir/node/node.cpp.o CMakeFiles/raft_lib.dir/raft/raft.cpp.o CMakeFiles/raft_lib.dir/storage/storage.cpp.o CMakeFiles/raft_lib.dir/network/network.cpp.o
+/Library/Developer/CommandLineTools/usr/bin/ranlib libraft_lib.a
