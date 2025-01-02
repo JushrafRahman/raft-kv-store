@@ -13,7 +13,7 @@ struct NodeAddress {
 };
 
 struct RaftMessage {
-    enum Type {
+    enum class Type {
         VOTE_REQUEST,
         VOTE_RESPONSE,
         APPEND_ENTRIES,
@@ -23,6 +23,9 @@ struct RaftMessage {
     Type type;
     int term;
     int senderId;
+    int lastLogIndex;
+    int lastLogTerm;
+    bool voteGranted;
     std::vector<std::string> entries;
     int prevLogIndex;
     int prevLogTerm;
@@ -34,16 +37,9 @@ public:
     NetworkManager(int nodeId, int port);
     ~NetworkManager();
 
-    // to listen for incoming messages
     void start();
-    
-    // stop network manager
     void stop();
-
-    // to send message to a specific node
     bool sendMessage(const NodeAddress& target, const RaftMessage& message);
-
-    // callback for receiving messages
     void setMessageCallback(std::function<void(const RaftMessage&)> callback);
 
 private:

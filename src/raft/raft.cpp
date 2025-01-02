@@ -1,4 +1,5 @@
 #include "raft.hpp"
+#include <iostream>
 
 RaftNode::RaftNode(int id, const std::vector<NodeAddress>& peers)
     : id_(id)
@@ -9,7 +10,8 @@ RaftNode::RaftNode(int id, const std::vector<NodeAddress>& peers)
     , peers_(peers)
     , running_(false)
     , gen_(rd_())
-    , electionTimeout_(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT) {
+    , electionTimeout_(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
+    , votesGranted_(0) {
     
     network_.setMessageCallback([this](const RaftMessage& msg) {
         processMessage(msg);
@@ -32,6 +34,9 @@ void RaftNode::stop() {
     if (electionThread_.joinable()) {
         electionThread_.join();
     }
+    if (heartbeatThread_.joinable()) {
+        heartbeatThread_.join();
+    }
     network_.stop();
 }
 
@@ -53,21 +58,18 @@ void RaftNode::runElectionTimer() {
     }
 }
 
-
 void RaftNode::startElection() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     currentTerm_++;
     state_ = NodeState::CANDIDATE;
     votedFor_ = id_;
-    
-    votesReceived_.clear();
-    votesGranted_ = 1;  // Vote for self
+    votesGranted_ = 1; 
     
     std::cout << "Node " << id_ << " starting election for term " << currentTerm_ << std::endl;
     
     RaftMessage voteRequest;
-    voteRequest.type = RaftMessage::VOTE_REQUEST;
+    voteRequest.type = RaftMessage::Type::VOTE_REQUEST;
     voteRequest.term = currentTerm_;
     voteRequest.senderId = id_;
     voteRequest.lastLogIndex = log_.size() - 1;
@@ -97,28 +99,6 @@ bool RaftNode::handleVoteRequest(const RaftMessage& message) {
     return false;
 }
 
-void RaftNode::processMessage(const RaftMessage& message) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    if (message.term > currentTerm_) {
-        currentTerm_ = message.term;
-        state_ = NodeState::FOLLOWER;
-        votedFor_ = -1;
-    }
-    
-    switch (message.type) {
-        case RaftMessage::VOTE_REQUEST:
-            // TODO: implement vote request handling
-            break;
-            
-        case RaftMessage::APPEND_ENTRIES:
-            cv_.notify_all();
-            break;
-            
-        // TODO: handle other message types...
-    }
-}
-
 void RaftNode::handleVoteResponse(const RaftMessage& message) {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -133,7 +113,6 @@ void RaftNode::handleVoteResponse(const RaftMessage& message) {
         }
     }
     
-    // check if we have majority
     int majority = (peers_.size() + 1) / 2 + 1;
     if (votesGranted_ >= majority) {
         becomeLeader();
@@ -168,10 +147,10 @@ void RaftNode::becomeLeader() {
 
 void RaftNode::sendHeartbeat() {
     RaftMessage heartbeat;
-    heartbeat.type = RaftMessage::APPEND_ENTRIES;
+    heartbeat.type = RaftMessage::Type::APPEND_ENTRIES;
     heartbeat.term = currentTerm_;
     heartbeat.senderId = id_;
-    heartbeat.entries.clear();
+    heartbeat.entries.clear(); 
     
     for (const auto& peer : peers_) {
         if (peer.port != peers_[id_].port) {
@@ -190,12 +169,11 @@ void RaftNode::processMessage(const RaftMessage& message) {
     }
     
     switch (message.type) {
-        case RaftMessage::VOTE_REQUEST: {
+        case RaftMessage::Type::VOTE_REQUEST: {
             bool voteGranted = handleVoteRequest(message);
-            
-            // Send response
+        
             RaftMessage response;
-            response.type = RaftMessage::VOTE_RESPONSE;
+            response.type = RaftMessage::Type::VOTE_RESPONSE;
             response.term = currentTerm_;
             response.senderId = id_;
             response.voteGranted = voteGranted;
@@ -204,11 +182,11 @@ void RaftNode::processMessage(const RaftMessage& message) {
             break;
         }
         
-        case RaftMessage::VOTE_RESPONSE:
+        case RaftMessage::Type::VOTE_RESPONSE:
             handleVoteResponse(message);
             break;
             
-        case RaftMessage::APPEND_ENTRIES:
+        case RaftMessage::Type::APPEND_ENTRIES:
             cv_.notify_all();
             break;
     }
