@@ -20,11 +20,25 @@ struct LogEntry {
     std::string command;
 };
 
+struct Command {
+    enum class Type {
+        PUT,
+        GET,
+        DELETE
+    };
+    
+    Type type;
+    std::string key;
+    std::string value;
+};
+
 class RaftNode {
 public:
     RaftNode(int id, const std::vector<NodeAddress>& peers);
     void start();
     void stop();
+    bool appendEntry(const Command& command);
+    bool replicateLog();
 
 private:
     void runElectionTimer();
@@ -35,6 +49,15 @@ private:
     void becomeLeader();
     void sendHeartbeat();
     int getLastLogTerm() const;
+
+    bool handleAppendEntries(const RaftMessage& message);
+    void handleAppendResponse(const RaftMessage& message);
+    void applyLogEntries(int lastApplied);
+    
+    // New member variables
+    int commitIndex_ = -1;
+    int lastApplied_ = -1;
+    std::function<void(const Command&)> applyCallback_;
 
     static constexpr int MIN_ELECTION_TIMEOUT = 150;  // ms
     static constexpr int MAX_ELECTION_TIMEOUT = 300;  // ms

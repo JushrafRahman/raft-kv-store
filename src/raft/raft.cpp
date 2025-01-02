@@ -198,3 +198,122 @@ int RaftNode::getLastLogTerm() const {
     }
     return log_.back().term;
 }
+
+bool RaftNode::appendEntry(const Command& command) {
+    if (state_ != NodeState::LEADER) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    LogEntry entry;
+    entry.term = currentTerm_;
+    entry.command = command;
+    log_.push_back(entry);
+    
+    return replicateLog();
+}
+
+bool RaftNode::replicateLog() {
+    for (const auto& peer : peers_) {
+        if (peer.port == peers_[id_].port) continue;
+        
+        RaftMessage appendMsg;
+        appendMsg.type = RaftMessage::Type::APPEND_ENTRIES;
+        appendMsg.term = currentTerm_;
+        appendMsg.senderId = id_;
+        
+        int nextIdx = nextIndex_[peer.port];
+        appendMsg.prevLogIndex = nextIdx - 1;
+        appendMsg.prevLogTerm = (nextIdx > 0 && !log_.empty()) ? log_[nextIdx - 1].term : 0;
+        
+        for (size_t i = nextIdx; i < log_.size(); i++) {
+            appendMsg.entries.push_back(log_[i]);
+        }
+        
+        appendMsg.leaderCommit = commitIndex_;
+        network_.sendMessage(peer, appendMsg);
+    }
+    return true;
+}
+
+bool RaftNode::handleAppendEntries(const RaftMessage& message) {
+    if (message.term < currentTerm_) {
+        return false;
+    }
+
+    cv_.notify_all();
+    
+    if (message.prevLogIndex >= 0) {
+        if (log_.size() <= static_cast<size_t>(message.prevLogIndex) ||
+            log_[message.prevLogIndex].term != message.prevLogTerm) {
+            return false;
+        }
+    }
+    
+    size_t newEntryIndex = message.prevLogIndex + 1;
+    for (const auto& newEntry : message.entries) {
+        if (log_.size() > newEntryIndex) {
+            if (log_[newEntryIndex].term != newEntry.term) {
+                log_.erase(log_.begin() + newEntryIndex, log_.end());
+                break;
+            }
+        } else {
+            break;
+        }
+        newEntryIndex++;
+    }
+    
+    for (size_t i = 0; i < message.entries.size(); i++) {
+        if (newEntryIndex + i >= log_.size()) {
+            log_.push_back(message.entries[i]);
+        }
+    }
+    
+    if (message.leaderCommit > commitIndex_) {
+        commitIndex_ = std::min(message.leaderCommit, static_cast<int>(log_.size() - 1));
+        applyLogEntries(commitIndex_);
+    }
+    
+    return true;
+}
+
+void RaftNode::handleAppendResponse(const RaftMessage& message) {
+    if (state_ != NodeState::LEADER) {
+        return;
+    }
+
+    if (message.success) {
+        nextIndex_[message.senderId] = message.lastLogIndex + 1;
+        matchIndex_[message.senderId] = message.lastLogIndex;
+        
+        std::vector<int> matchIndexes;
+        for (const auto& pair : matchIndex_) {
+            matchIndexes.push_back(pair.second);
+        }
+        matchIndexes.push_back(log_.size() - 1); 
+        
+        std::sort(matchIndexes.begin(), matchIndexes.end());
+        int newCommitIndex = matchIndexes[matchIndexes.size() / 2];
+        
+        if (newCommitIndex > commitIndex_ && log_[newCommitIndex].term == currentTerm_) {
+            commitIndex_ = newCommitIndex;
+            applyLogEntries(commitIndex_);
+        }
+    } else {
+        nextIndex_[message.senderId]--;
+        if (nextIndex_[message.senderId] < 0) {
+            nextIndex_[message.senderId] = 0;
+        }
+        replicateLog();
+    }
+}
+
+void RaftNode::applyLogEntries(int upToIndex) {
+    while (lastApplied_ < upToIndex) {
+        lastApplied_++;
+        if (applyCallback_) {
+            applyCallback_(log_[lastApplied_].command);
+        }
+    }
+}
