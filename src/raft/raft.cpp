@@ -1,17 +1,16 @@
 #include "raft.hpp"
 #include <iostream>
 
-RaftNode::RaftNode(int id, const std::vector<NodeAddress>& peers)
+RaftNode::RaftNode(int id, const std::vector<NodeAddress>& peers, const std::string& dataDir)
     : id_(id)
-    , state_(NodeState::FOLLOWER)
-    , currentTerm_(0)
-    , votedFor_(-1)
-    , network_(id, peers[id].port)
     , peers_(peers)
+    , network_(id, peers[id].port)
+    , storage_(std::make_unique<PersistentStorage>(dataDir, id))
     , running_(false)
     , gen_(rd_())
-    , electionTimeout_(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT)
-    , votesGranted_(0) {
+    , electionTimeout_(MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT) {
+    
+    loadPersistedState();
     
     network_.setMessageCallback([this](const RaftMessage& msg) {
         processMessage(msg);
@@ -62,8 +61,10 @@ void RaftNode::startElection() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     currentTerm_++;
+    persistCurrentTerm();
     state_ = NodeState::CANDIDATE;
     votedFor_ = id_;
+    persistVotedFor();
     votesGranted_ = 1; 
     
     std::cout << "Node " << id_ << " starting election for term " << currentTerm_ << std::endl;
@@ -242,6 +243,14 @@ bool RaftNode::handleAppendEntries(const RaftMessage& message) {
         return false;
     }
 
+    if (message.term > currentTerm_) {
+        currentTerm_ = message.term;
+        persistCurrentTerm();
+        state_ = NodeState::FOLLOWER;
+        votedFor_ = -1;
+        persistVotedFor();
+    }
+
     cv_.notify_all();
     
     if (message.prevLogIndex >= 0) {
@@ -268,6 +277,15 @@ bool RaftNode::handleAppendEntries(const RaftMessage& message) {
         if (newEntryIndex + i >= log_.size()) {
             log_.push_back(message.entries[i]);
         }
+    }
+    
+    if (message.leaderCommit > commitIndex_) {
+        commitIndex_ = std::min(message.leaderCommit, static_cast<int>(log_.size() - 1));
+        applyLogEntries(commitIndex_);
+    }
+    
+    if (!message.entries.empty()) {
+        persistLogEntries(message.entries, message.prevLogIndex + 1);
     }
     
     if (message.leaderCommit > commitIndex_) {
@@ -315,5 +333,53 @@ void RaftNode::applyLogEntries(int upToIndex) {
         if (applyCallback_) {
             applyCallback_(log_[lastApplied_].command);
         }
+    }
+}
+
+void RaftNode::loadPersistedState() {
+    int term, votedFor;
+    if (storage_->getPersistedState(term, votedFor)) {
+        currentTerm_ = term;
+        votedFor_ = votedFor;
+    } else {
+        currentTerm_ = 0;
+        votedFor_ = -1;
+    }
+    
+    std::vector<LogEntry> entries;
+    if (storage_->getLogEntries(entries)) {
+        log_ = std::move(entries);
+    }
+    
+    int lastIncludedIndex, lastIncludedTerm;
+    if (storage_->getLatestSnapshot(lastIncludedIndex, lastIncludedTerm)) {
+        commitIndex_ = lastIncludedIndex;
+        lastApplied_ = lastIncludedIndex;
+    }
+}
+
+void RaftNode::persistCurrentTerm() {
+    storage_->saveCurrentTerm(currentTerm_);
+}
+
+void RaftNode::persistVotedFor() {
+    storage_->saveVotedFor(votedFor_);
+}
+
+void RaftNode::persistLogEntries(const std::vector<LogEntry>& entries, int startIndex) {
+    storage_->appendLogEntries(entries, startIndex);
+}
+
+void RaftNode::createSnapshot() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (commitIndex_ <= 0 || log_.empty()) return;
+    
+    int lastIncludedIndex = commitIndex_;
+    int lastIncludedTerm = log_[lastIncludedIndex].term;
+    
+    if (storage_->createSnapshot(lastIncludedIndex, lastIncludedTerm)) {
+        log_.erase(log_.begin(), log_.begin() + lastIncludedIndex + 1);
+        storage_->truncateLog(log_.size() - 1);
     }
 }

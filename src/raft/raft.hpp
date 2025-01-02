@@ -34,7 +34,7 @@ struct Command {
 
 class RaftNode {
 public:
-    RaftNode(int id, const std::vector<NodeAddress>& peers);
+    RaftNode(int id, const std::vector<NodeAddress>& peers, const std::string& dataDir);
     void start();
     void stop();
     bool appendEntry(const Command& command);
@@ -87,4 +87,10 @@ private:
     std::random_device rd_;
     std::mt19937 gen_;
     std::uniform_int_distribution<> electionTimeout_;
+
+    std::unique_ptr<PersistentStorage> storage_;
+    void persistCurrentTerm();
+    void persistVotedFor();
+    void persistLogEntries(const std::vector<LogEntry>& entries, int startIndex);
+    void loadPersistedState();
 };
