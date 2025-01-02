@@ -383,3 +383,101 @@ void RaftNode::createSnapshot() {
         storage_->truncateLog(log_.size() - 1);
     }
 }
+
+bool RaftNode::addServer(const NodeAddress& server) {
+    if (state_ != NodeState::LEADER) {
+        return false;
+    }
+    
+    LogEntry configEntry;
+    configEntry.term = currentTerm_;
+    
+    Command cmd;
+    cmd.type = Command::Type::CONFIG_CHANGE;
+    cmd.operation = "add_server";
+    cmd.server = server;
+    configEntry.command = cmd;
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    log_.push_back(configEntry);
+    persistLogEntries({configEntry}, log_.size() - 1);
+    
+    return replicateLog();
+}
+
+bool RaftNode::removeServer(const NodeAddress& server) {
+    if (state_ != NodeState::LEADER) {
+        return false;
+    }
+    
+    if (configManager_->getCurrentConfig().servers.size() <= 1 ||
+        (server.ip == peers_[id_].ip && server.port == peers_[id_].port)) {
+        return false;
+    }
+    
+    LogEntry configEntry;
+    configEntry.term = currentTerm_;
+    
+    Command cmd;
+    cmd.type = Command::Type::CONFIG_CHANGE;
+    cmd.operation = "remove_server";
+    cmd.server = server;
+    configEntry.command = cmd;
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    log_.push_back(configEntry);
+    persistLogEntries({configEntry}, log_.size() - 1);
+    
+    return replicateLog();
+}
+
+void RaftNode::handleConfigChange(const LogEntry& entry) {
+    const Command& cmd = entry.command;
+    if (cmd.type != Command::Type::CONFIG_CHANGE) {
+        return;
+    }
+    
+    if (cmd.operation == "add_server") {
+        if (configManager_->addServer(cmd.server)) {
+            replicateConfigChange(configManager_->getCurrentConfig());
+        }
+    } else if (cmd.operation == "remove_server") {
+        if (configManager_->removeServer(cmd.server)) {
+            replicateConfigChange(configManager_->getCurrentConfig());
+        }
+    } else if (cmd.operation == "end_joint") {
+        configManager_->endJointConsensus();
+    }
+}
+
+bool RaftNode::replicateConfigChange(const ClusterConfig& newConfig) {
+    LogEntry endJointEntry;
+    endJointEntry.term = currentTerm_;
+    
+    Command cmd;
+    cmd.type = Command::Type::CONFIG_CHANGE;
+    cmd.operation = "end_joint";
+    endJointEntry.command = cmd;
+    
+    log_.push_back(endJointEntry);
+    persistLogEntries({endJointEntry}, log_.size() - 1);
+    
+    return replicateLog();
+}
+
+void RaftNode::applyLogEntries(int upToIndex) {
+    while (lastApplied_ < upToIndex) {
+        lastApplied_++;
+        const LogEntry& entry = log_[lastApplied_];
+        
+        if (entry.command.type == Command::Type::CONFIG_CHANGE) {
+            handleConfigChange(entry);
+        } else if (applyCallback_) {
+            applyCallback_(entry.command);
+        }
+    }
+}
+
+bool RaftNode::hasQuorum(const std::set<int>& votes) const {
+    return configManager_->hasQuorum(votes);
+}

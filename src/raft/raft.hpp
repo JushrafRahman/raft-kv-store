@@ -8,6 +8,7 @@
 #include <random>
 #include <iostream>
 #include "../network/network.hpp"
+#include "../cluster/cluster_config.hpp"
 
 enum class NodeState {
     FOLLOWER,
@@ -39,6 +40,8 @@ public:
     void stop();
     bool appendEntry(const Command& command);
     bool replicateLog();
+    bool addServer(const NodeAddress& server);
+    bool removeServer(const NodeAddress& server);
 
 private:
     void runElectionTimer();
@@ -93,4 +96,8 @@ private:
     void persistVotedFor();
     void persistLogEntries(const std::vector<LogEntry>& entries, int startIndex);
     void loadPersistedState();
+
+    std::unique_ptr<ClusterConfigManager> configManager_;
+    void handleConfigChange(const LogEntry& entry);
+    bool replicateConfigChange(const ClusterConfig& newConfig);
 };
