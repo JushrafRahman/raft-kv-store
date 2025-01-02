@@ -6,6 +6,63 @@
 
 namespace fs = std::filesystem;
 
+// helper functions for Command serialization/deserialization
+void serializeCommand(std::ofstream& file, const Command& cmd) {
+    int type = static_cast<int>(cmd.type);
+    file.write(reinterpret_cast<const char*>(&type), sizeof(type));
+
+    size_t keySize = cmd.key.size();
+    file.write(reinterpret_cast<const char*>(&keySize), sizeof(keySize));
+    file.write(cmd.key.data(), keySize);
+
+    size_t valueSize = cmd.value.size();
+    file.write(reinterpret_cast<const char*>(&valueSize), sizeof(valueSize));
+    file.write(cmd.value.data(), valueSize);
+
+    size_t opSize = cmd.operation.size();
+    file.write(reinterpret_cast<const char*>(&opSize), sizeof(opSize));
+    file.write(cmd.operation.data(), opSize);
+
+    // serialize NodeAddress
+    size_t ipSize = cmd.server.ip.size();
+    file.write(reinterpret_cast<const char*>(&ipSize), sizeof(ipSize));
+    file.write(cmd.server.ip.data(), ipSize);
+    file.write(reinterpret_cast<const char*>(&cmd.server.port), sizeof(cmd.server.port));
+}
+
+bool deserializeCommand(std::ifstream& file, Command& cmd) {
+    int type;
+    if (!file.read(reinterpret_cast<char*>(&type), sizeof(type))) return false;
+    cmd.type = static_cast<Command::Type>(type);
+
+    // read key
+    size_t keySize;
+    if (!file.read(reinterpret_cast<char*>(&keySize), sizeof(keySize))) return false;
+    cmd.key.resize(keySize);
+    if (!file.read(&cmd.key[0], keySize)) return false;
+
+    // read value
+    size_t valueSize;
+    if (!file.read(reinterpret_cast<char*>(&valueSize), sizeof(valueSize))) return false;
+    cmd.value.resize(valueSize);
+    if (!file.read(&cmd.value[0], valueSize)) return false;
+
+    // read operation
+    size_t opSize;
+    if (!file.read(reinterpret_cast<char*>(&opSize), sizeof(opSize))) return false;
+    cmd.operation.resize(opSize);
+    if (!file.read(&cmd.operation[0], opSize)) return false;
+
+    // read NodeAddress
+    size_t ipSize;
+    if (!file.read(reinterpret_cast<char*>(&ipSize), sizeof(ipSize))) return false;
+    cmd.server.ip.resize(ipSize);
+    if (!file.read(&cmd.server.ip[0], ipSize)) return false;
+    if (!file.read(reinterpret_cast<char*>(&cmd.server.port), sizeof(cmd.server.port))) return false;
+
+    return true;
+}
+
 PersistentStorage::PersistentStorage(const std::string& dataDir, int nodeId)
     : dataDir_(dataDir), nodeId_(nodeId) {
     ensureDirectoryExists();
@@ -16,7 +73,6 @@ bool PersistentStorage::saveCurrentTerm(int term) {
     std::ofstream file(getStateFile(), std::ios::binary);
     if (!file) return false;
     
-    int votedFor;
     file.seekp(0);
     file.write(reinterpret_cast<char*>(&term), sizeof(term));
     if (file.fail()) return false;
@@ -56,11 +112,7 @@ bool PersistentStorage::appendLogEntries(const std::vector<LogEntry>& entries, i
     
     for (const auto& entry : entries) {
         file.write(reinterpret_cast<const char*>(&entry.term), sizeof(entry.term));
-        
-        size_t cmdSize = entry.command.size();
-        file.write(reinterpret_cast<const char*>(&cmdSize), sizeof(cmdSize));
-        file.write(entry.command.data(), cmdSize);
-        
+        serializeCommand(file, entry.command);
         if (file.fail()) return false;
     }
     
@@ -80,11 +132,7 @@ bool PersistentStorage::truncateLog(int lastIndex) {
     for (int i = 0; i <= lastIndex; i++) {
         const auto& entry = entries[i];
         file.write(reinterpret_cast<const char*>(&entry.term), sizeof(entry.term));
-        
-        size_t cmdSize = entry.command.size();
-        file.write(reinterpret_cast<const char*>(&cmdSize), sizeof(cmdSize));
-        file.write(entry.command.data(), cmdSize);
-        
+        serializeCommand(file, entry.command);
         if (file.fail()) return false;
     }
     
@@ -94,7 +142,7 @@ bool PersistentStorage::truncateLog(int lastIndex) {
 bool PersistentStorage::getLogEntries(std::vector<LogEntry>& entries) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::ifstream file(getLogFile(), std::ios::binary);
-    if (!file) return true;
+    if (!file) return true;  // Empty log is valid
     
     entries.clear();
     while (file && !file.eof()) {
@@ -105,18 +153,10 @@ bool PersistentStorage::getLogEntries(std::vector<LogEntry>& entries) {
             return false;
         }
         
-        size_t cmdSize;
-        if (!file.read(reinterpret_cast<char*>(&cmdSize), sizeof(cmdSize))) {
+        if (!deserializeCommand(file, entry.command)) {
             return false;
         }
         
-        std::string command;
-        command.resize(cmdSize);
-        if (!file.read(&command[0], cmdSize)) {
-            return false;
-        }
-        
-        entry.command = std::move(command);
         entries.push_back(std::move(entry));
     }
     

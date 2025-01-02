@@ -5,11 +5,12 @@
 
 class Node {
 public:
-    Node(int id, const std::vector<NodeAddress>& peers);
+    Node(int id, const std::vector<NodeAddress>& peers, 
+         const std::string& dataDir, int monitoringPort);
     void start();
     void stop();
 
 private:
     RaftNode raft_;
-    KeyValueStore storage_;
+    std::unique_ptr<KeyValueStore> storage_;
 };

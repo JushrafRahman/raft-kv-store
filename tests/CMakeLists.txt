@@ -14,6 +14,8 @@ set(TEST_FILES
     performance/benchmark_test.cpp
 )
 
+enable_testing()
+
 add_executable(raft_tests ${TEST_FILES})
 
 target_link_libraries(raft_tests
@@ -21,6 +23,7 @@ target_link_libraries(raft_tests
         raft_lib
         GTest::gtest_main
         GTest::gmock_main
+        Threads::Threads
 )
 
 include(GoogleTest)

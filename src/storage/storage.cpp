@@ -1,4 +1,5 @@
 #include "storage.hpp"
+#include "../raft/raft.hpp"
 
 KeyValueStore::KeyValueStore(RaftNode& raft) : raft_(raft) {
     raft_.setApplyCallback([this](const Command& cmd) {
@@ -43,6 +44,9 @@ void KeyValueStore::applyCommand(const Command& cmd) {
             break;
             
         case Command::Type::GET:
+            break;
+            
+        case Command::Type::CONFIG_CHANGE:
             break;
     }
 }

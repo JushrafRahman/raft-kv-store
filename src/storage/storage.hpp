@@ -2,7 +2,8 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
-#include "../raft/raft.hpp"
+#include "../common/forward_declarations.hpp"
+#include "../common/types.hpp"
 
 class KeyValueStore {
 public:

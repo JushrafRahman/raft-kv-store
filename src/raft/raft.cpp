@@ -36,6 +36,12 @@ RaftNode::RaftNode(int id, const std::vector<NodeAddress>& peers,
     monitoringServer_->start();
 }
 
+RaftNode::~RaftNode() {
+    if (running_) {
+        stop();
+    }
+}
+
 void RaftNode::start() {
     running_ = true;
     network_.start();
@@ -66,6 +72,24 @@ void RaftNode::stop() {
     health_->reportHealth("raft", false, "Node stopped");
 }
 
+void RaftNode::runElectionTimer() {
+    while (running_) {
+        int timeout = electionTimeout_(gen_);
+        
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (cv_.wait_for(lock, std::chrono::milliseconds(timeout), 
+                [this] { return !running_; })) {
+                break;
+            }
+        }
+        
+        if (state_ != NodeState::LEADER) {
+            startElection();
+        }
+    }
+}
+
 void RaftNode::startElection() {
     std::lock_guard<std::mutex> lock(mutex_);
     
@@ -90,13 +114,42 @@ void RaftNode::startElection() {
     voteRequest.lastLogIndex = log_.size() - 1;
     voteRequest.lastLogTerm = log_.empty() ? 0 : log_.back().term;
     
-    // Send RequestVote to all peers
     for (const auto& peer : peers_) {
         if (peer.port != peers_[id_].port) {
             network_.sendMessage(peer, voteRequest);
             metrics_->incrementCounter("vote_requests_sent");
         }
     }
+}
+
+void RaftNode::persistCurrentTerm() {
+    storage_->saveCurrentTerm(currentTerm_);
+}
+
+void RaftNode::persistVotedFor() {
+    storage_->saveVotedFor(votedFor_);
+}
+
+void RaftNode::persistLogEntries(const std::vector<LogEntry>& entries, int startIndex) {
+    storage_->appendLogEntries(entries, startIndex);
+}
+
+bool RaftNode::handleVoteRequest(const RaftMessage& message) {
+    if (message.term < currentTerm_) {
+        return false;
+    }
+    
+    bool logIsUpToDate = message.lastLogTerm > getLastLogTerm() ||
+                        (message.lastLogTerm == getLastLogTerm() && 
+                         message.lastLogIndex >= static_cast<int>(log_.size() - 1));
+                         
+    if ((votedFor_ == -1 || votedFor_ == message.senderId) && logIsUpToDate) {
+        votedFor_ = message.senderId;
+        persistVotedFor();
+        return true;
+    }
+    
+    return false;
 }
 
 bool RaftNode::appendEntry(const Command& command) {
@@ -119,6 +172,97 @@ bool RaftNode::appendEntry(const Command& command) {
     metrics_->recordRate("operations");
     
     return replicateLog();
+}
+
+bool RaftNode::replicateLog() {
+    if (state_ != NodeState::LEADER) {
+        return false;
+    }
+
+    for (const auto& peer : peers_) {
+        if (peer.port == peers_[id_].port) continue;
+        
+        RaftMessage message;
+        message.type = RaftMessage::Type::APPEND_ENTRIES;
+        message.term = currentTerm_;
+        message.senderId = id_;
+        message.prevLogIndex = nextIndex_[peer.port] - 1;
+        message.prevLogTerm = message.prevLogIndex >= 0 ? 
+            log_[message.prevLogIndex].term : 0;
+        
+        // Add entries starting from nextIndex
+        for (size_t i = nextIndex_[peer.port]; i < log_.size(); i++) {
+            message.entries.push_back(std::to_string(log_[i].term));
+        }
+        
+        message.leaderCommit = commitIndex_;
+        network_.sendMessage(peer, message);
+    }
+    
+    return true;
+}
+
+bool RaftNode::handleAppendEntries(const RaftMessage& message) {
+    if (message.term < currentTerm_) {
+        return false;
+    }
+
+    cv_.notify_all();  // Reset election timer
+    
+    // Check if we have the previous log entry
+    if (message.prevLogIndex >= 0) {
+        if (log_.size() <= static_cast<size_t>(message.prevLogIndex) ||
+            log_[message.prevLogIndex].term != message.prevLogTerm) {
+            return false;
+        }
+        
+        // Delete any conflicting entries
+        log_.resize(message.prevLogIndex + 1);
+    }
+    
+    // Append new entries
+    for (const auto& entryStr : message.entries) {
+        LogEntry entry;
+        entry.term = std::stoi(entryStr);  // Simple serialization
+        log_.push_back(entry);
+    }
+    
+    // Update commit index
+    if (message.leaderCommit > commitIndex_) {
+        commitIndex_ = std::min(message.leaderCommit, static_cast<int>(log_.size()) - 1);
+        applyLogEntries(commitIndex_);
+    }
+    
+    return true;
+}
+
+void RaftNode::handleAppendResponse(const RaftMessage& message) {
+    if (state_ != NodeState::LEADER) {
+        return;
+    }
+
+    if (message.success) {
+        nextIndex_[message.senderId] = message.lastLogIndex + 1;
+        matchIndex_[message.senderId] = message.lastLogIndex;
+        
+        // Check if we can commit any entries
+        std::vector<int> matchIndexes;
+        for (const auto& [_, index] : matchIndex_) {
+            matchIndexes.push_back(index);
+        }
+        std::sort(matchIndexes.begin(), matchIndexes.end());
+        int newCommitIndex = matchIndexes[matchIndexes.size() / 2];
+        
+        if (newCommitIndex > commitIndex_ && 
+            log_[newCommitIndex].term == currentTerm_) {
+            commitIndex_ = newCommitIndex;
+            applyLogEntries(commitIndex_);
+        }
+    } else {
+        // Decrement nextIndex and retry
+        nextIndex_[message.senderId] = std::max(0, nextIndex_[message.senderId] - 1);
+        replicateLog();  // Retry with lower nextIndex
+    }
 }
 
 void RaftNode::handleVoteResponse(const RaftMessage& message) {
@@ -252,4 +396,23 @@ void RaftNode::loadPersistedState() {
         log_ = std::move(entries);
         metrics_->setGauge("log_size", log_.size());
     }
+}
+
+void RaftNode::applyLogEntries(int upToIndex) {
+    for (int i = lastApplied_ + 1; i <= upToIndex; i++) {
+        // Apply each entry to the state machine
+        if (i < static_cast<int>(log_.size())) {
+            if (applyCallback_) {
+                applyCallback_(log_[i].command);
+            }
+            lastApplied_ = i;
+        }
+    }
+}
+
+int RaftNode::getLastLogTerm() const {
+    if (log_.empty()) {
+        return 0;
+    }
+    return log_.back().term;
 }

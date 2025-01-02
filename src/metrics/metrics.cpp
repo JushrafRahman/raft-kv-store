@@ -11,7 +11,11 @@ void MetricsCollector::decrementCounter(const std::string& name) {
 }
 
 int64_t MetricsCollector::getCounter(const std::string& name) const {
-    return counters_[name].load();
+    auto it = counters_.find(name);
+    if (it != counters_.end()) {
+        return it->second.load();
+    }
+    return 0;
 }
 
 void MetricsCollector::setGauge(const std::string& name, double value) {
@@ -19,23 +23,32 @@ void MetricsCollector::setGauge(const std::string& name, double value) {
 }
 
 double MetricsCollector::getGauge(const std::string& name) const {
-    return gauges_[name].load();
+    auto it = gauges_.find(name);
+    if (it != gauges_.end()) {
+        return it->second.load();
+    }
+    return 0.0;
 }
 
 void MetricsCollector::recordLatency(const std::string& name, double milliseconds) {
     std::lock_guard<std::mutex> lock(mutex_);
     histograms_[name].push_back(milliseconds);
+    
+    const size_t MAX_SAMPLES = 1000;
+    if (histograms_[name].size() > MAX_SAMPLES) {
+        histograms_[name].erase(histograms_[name].begin());
+    }
 }
 
 std::pair<double, double> MetricsCollector::getLatencyPercentiles(
     const std::string& name) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& histogram = histograms_.at(name);
-    if (histogram.empty()) {
+    auto it = histograms_.find(name);
+    if (it == histograms_.end() || it->second.empty()) {
         return {0.0, 0.0};
     }
 
-    std::vector<double> sorted = histogram;
+    std::vector<double> sorted = it->second;
     std::sort(sorted.begin(), sorted.end());
 
     size_t p50_idx = sorted.size() * 0.5;
@@ -59,17 +72,17 @@ void MetricsCollector::recordRate(const std::string& name) {
 
 double MetricsCollector::getCurrentRate(const std::string& name) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto& times = rates_.at(name);
-    if (times.empty()) {
+    auto it = rates_.find(name);
+    if (it == rates_.end() || it->second.empty()) {
         return 0.0;
     }
 
     auto now = Clock::now();
     auto cutoff = now - std::chrono::seconds(60);
-    int count = std::count_if(times.begin(), times.end(),
+    int count = std::count_if(it->second.begin(), it->second.end(),
         [cutoff](const TimePoint& tp) { return tp >= cutoff; });
     
-    return count / 60.0; 
+    return count / 60.0;  // Events per second
 }
 
 void HealthChecker::registerComponent(const std::string& name) {
